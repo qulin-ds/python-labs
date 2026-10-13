@@ -1,0 +1,89 @@
+on:
+  push:
+    - workflows: [lab-check]
+      filter:
+        branches: ["main", "master"]
+
+  pull_request:
+    - workflows: [lab-check]
+
+workflows:
+  lab-check:
+    tasks:
+      - name: run-notebook-and-build-report
+        cubes:
+          - name: execute-notebook
+            image: docker.io/library/python:3.11
+            script:
+              - pip install -r requirements.txt
+              - |
+                python3 -c "
+                import json
+                import os
+                import datetime
+                
+                # Читаем notebook
+                with open('lab_template.ipynb', 'r', encoding='utf-8') as f:
+                    nb = json.load(f)
+                
+                # Создаем маркер выполнения раннером
+                runner_marker = f'''# Выполнено автоматически раннером SourceCraft
+# Дата выполнения: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Runner ID: {os.environ.get('SOURCECRAFT_RUNNER_ID', 'unknown')}
+# Pipeline ID: {os.environ.get('SOURCECRAFT_PIPELINE_ID', 'unknown')}
+# Build ID: {os.environ.get('SOURCECRAFT_BUILD_ID', 'unknown')}
+# Хост: {os.environ.get('HOSTNAME', os.environ.get('COMPUTERNAME', 'unknown'))}
+print('Этот notebook был выполнен автоматически в CI/CD pipeline SourceCraft')
+print(f'Время выполнения: {datetime.datetime.now().strftime(\"%Y-%m-%d %H:%M:%S\")}')
+print('НЕ является локальным выполнением или Google Colaboratory')'''
+                
+                # Добавляем маркер в первую code-ячейку (после импортов)
+                first_code_cell_idx = None
+                for i, cell in enumerate(nb['cells']):
+                    if cell['cell_type'] == 'code' and first_code_cell_idx is None:
+                        first_code_cell_idx = i
+                
+                if first_code_cell_idx is not None:
+                    # Добавляем маркер в начало первой code-ячейки
+                    original_source = nb['cells'][first_code_cell_idx]['source']
+                    if isinstance(original_source, list):
+                        original_source = ''.join(original_source)
+                    nb['cells'][first_code_cell_idx]['source'] = runner_marker + '\n\n' + original_source
+                
+                # Добавляем маркер в последнюю ячейку
+                last_cell_idx = len(nb['cells']) - 1
+                runner_footer = f'''\n\n# === АВТОМАТИЧЕСКАЯ ОТМЕТКА РАННЕРА ===
+# Notebook выполнен автоматически в CI/CD pipeline
+# Platform: SourceCraft
+# Execution time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Runner: {os.environ.get('SOURCECRAFT_RUNNER_ID', 'unknown')}
+# Это НЕ локальное выполнение и НЕ Google Colaboratory'''
+                
+                last_cell = nb['cells'][last_cell_idx]
+                if last_cell['cell_type'] == 'code':
+                    last_source = last_cell['source']
+                    if isinstance(last_source, list):
+                        last_source = ''.join(last_source)
+                    last_cell['source'] = last_source + runner_footer
+                else:
+                    # Если последняя ячейка markdown, добавляем новую code-ячейку
+                    nb['cells'].append({
+                        'cell_type': 'code',
+                        'execution_count': None,
+                        'metadata': {},
+                        'outputs': [],
+                        'source': runner_footer
+                    })
+                
+                # Сохраняем модифицированный notebook
+                with open('lab_template.ipynb', 'w', encoding='utf-8') as f:
+                    json.dump(nb, f, ensure_ascii=False, indent=2)
+                
+                print('Маркер раннера добавлен успешно')
+                "
+              - jupyter nbconvert --to notebook --execute lab_template.ipynb --output executed_lab.ipynb
+              - jupyter nbconvert --to html executed_lab.ipynb --output report.html
+            artifacts:
+              paths:
+                - executed_lab.ipynb
+                - report.html
